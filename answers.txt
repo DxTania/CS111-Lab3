@@ -11,13 +11,13 @@
 # information you'd like us to know, please add it at the end of the file.
 
 # Partner 1
-Name: 
-Student ID: 
-Email: 
+Name: Tania DePasquale
+Student ID: 704018998
+Email: rawrtan@gmail.com
 
 # Partner 2 (if you're working in a team)
-Name: 
-Student ID: 
+Name: Charly Sotelo
+Student ID: 303891983
 Email: 
 
 # Extra credit problems

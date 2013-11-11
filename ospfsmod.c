@@ -452,9 +452,12 @@ ospfs_dir_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		 * the loop.  For now we do this all the time.
 		 *
 		 * EXERCISE: Your code here */
-		r = 1;		/* Fix me! */
-		break;		/* Fix me! */
-
+		uint32_t cur_file_byte_offset = (f_pos - 2) * OSPFS_DIRENTRY_SIZE;
+		uint32_t file_type;
+		if (cur_file_byte_offset >= dir_oi->oi_size) {
+			r = 1;
+			break;
+		}
 		/* Get a pointer to the next entry (od) in the directory.
 		 * The file system interprets the contents of a
 		 * directory-file as a sequence of ospfs_direntry structures.
@@ -476,6 +479,33 @@ ospfs_dir_readdir(struct file *filp, void *dirent, filldir_t filldir)
 		 */
 
 		/* EXERCISE: Your code here */
+		 od = ospfs_inode_data(dir_oi, cur_file_byte_offset);
+		 entry_oi = ospfs_inode(od->od_ino);
+		 if (entry_oi == NULL || od->od_ino == 0) {
+		 	// Ignore blank directory entry
+		 	f_pos++;
+		 	continue;
+		 }
+		 
+		 switch(entry_oi->oi_ftype) {
+		 	case OSPFS_FTYPE_REG:
+		 		file_type = DT_REG;
+		 		break;
+		 	case OSPFS_FTYPE_DIR:
+		 		file_type = DT_DIR;
+		 		break;
+	 		case OSPFS_FTYPE_SYMLINK:
+	 			file_type = DT_LNK;
+	 			break;
+ 			default:
+ 				r = 1;
+ 				continue;
+ 				break;
+		 }
+
+		 ok_so_far = filldir(dirent, od->od_name,
+		 	strlen(od->od_name), f_pos, od->od_ino, file_type);
+		 f_pos++;
 	}
 
 	// Save the file position and return!
@@ -552,7 +582,14 @@ ospfs_unlink(struct inode *dirino, struct dentry *dentry)
 static uint32_t
 allocate_block(void)
 {
-	/* EXERCISE: Your code here */
+	void *freemap = ospfs_block(OSPFS_FREEMAP_BLK);
+	uint32_t i;
+	for (i = OSPFS_FREEMAP_BLK; i < ospfs_super->os_nblocks; i++) {
+		if (bitvector_test(freemap, i)) {
+			bitvector_clear(freemap, i);
+			return i;
+		}
+	}
 	return 0;
 }
 
@@ -572,6 +609,8 @@ static void
 free_block(uint32_t blockno)
 {
 	/* EXERCISE: Your code here */
+	void *freemap = ospfs_block(OSPFS_FREEMAP_BLK);
+	bitvector_set(freemap, blockno);
 }
 
 
@@ -608,7 +647,10 @@ static int32_t
 indir2_index(uint32_t b)
 {
 	// Your code here.
-	return -1;
+	if (b >= (OSPFS_NDIRECT + OSPFS_NINDIRECT))
+     return 0;
+  else 
+		return -1;
 }
 
 
@@ -627,7 +669,14 @@ static int32_t
 indir_index(uint32_t b)
 {
 	// Your code here.
-	return -1;
+	if (b < OSPFS_NDIRECT) // direct
+    return -1;
+  else if (b >= OSPFS_NDIRECT && b < (OSPFS_NDIRECT + OSPFS_NINDIRECT)) // 1st indirect
+    return 0;
+  else if (b >= OSPFS_NDIRECT + OSPFS_NINDIRECT) // 2nd indrect
+  	return ((b - (OSPFS_NDIRECT + OSPFS_NINDIRECT)) / OSPFS_NINDIRECT);
+  else
+  	return -1;
 }
 
 
@@ -644,7 +693,14 @@ static int32_t
 direct_index(uint32_t b)
 {
 	// Your code here.
-	return -1;
+	if (b >= 0 && b < OSPFS_NDIRECT) // direct block
+		return b;
+	else if (b >= OSPFS_NDIRECT && b < (OSPFS_NDIRECT + OSPFS_NINDIRECT)) // 1st indrect
+		return b - OSPFS_NDIRECT;
+	else if (b >= OSPFS_NDIRECT + OSPFS_NINDIRECT) // 2nd indirect
+		return ((b - (OSPFS_NDIRECT + OSPFS_NINDIRECT)) % OSPFS_NINDIRECT);
+	else
+		return -1;
 }
 
 
@@ -688,6 +744,9 @@ add_block(ospfs_inode_t *oi)
 	// keep track of allocations to free in case of -ENOSPC
 	uint32_t *allocated[2] = { 0, 0 };
 
+	(void) (allocated);
+	(void) (n);
+
 	/* EXERCISE: Your code here */
 	return -EIO; // Replace this line
 }
@@ -720,6 +779,8 @@ remove_block(ospfs_inode_t *oi)
 {
 	// current number of blocks in file
 	uint32_t n = ospfs_size2nblocks(oi->oi_size);
+
+	(void) (n);
 
 	/* EXERCISE: Your code here */
 	return -EIO; // Replace this line
@@ -767,6 +828,9 @@ change_size(ospfs_inode_t *oi, uint32_t new_size)
 {
 	uint32_t old_size = oi->oi_size;
 	int r = 0;
+
+	(void) (old_size);
+	(void) (r);
 
 	while (ospfs_size2nblocks(oi->oi_size) < ospfs_size2nblocks(new_size)) {
 	        /* EXERCISE: Your code here */
@@ -1008,7 +1072,15 @@ create_blank_direntry(ospfs_inode_t *dir_oi)
 	//    entries and return one of them.
 
 	/* EXERCISE: Your code here. */
-	return ERR_PTR(-EINVAL); // Replace this line
+	int off; // Search for an empty entry
+	for (off = 0; off < dir_oi->oi_size; off += OSPFS_DIRENTRY_SIZE) {
+		ospfs_direntry_t *od = ospfs_inode_data(dir_oi, off);
+		if (!od->od_ino)
+			return od;
+	}
+	// Couldn't find an empty entry, add block (idk if this is right, change size?)
+	if (add_block(dir_oi) < 0)
+		return ERR_PTR(-ENOSPC);
 }
 
 // ospfs_link(src_dentry, dir, dst_dentry
@@ -1080,6 +1152,7 @@ ospfs_create(struct inode *dir, struct dentry *dentry, int mode, struct nameidat
 {
 	ospfs_inode_t *dir_oi = ospfs_inode(dir->i_ino);
 	uint32_t entry_ino = 0;
+	(void) (dir_oi);
 	/* EXERCISE: Your code here. */
 	return -EINVAL; // Replace this line
 
@@ -1123,6 +1196,7 @@ ospfs_symlink(struct inode *dir, struct dentry *dentry, const char *symname)
 {
 	ospfs_inode_t *dir_oi = ospfs_inode(dir->i_ino);
 	uint32_t entry_ino = 0;
+	(void) (dir_oi);
 
 	/* EXERCISE: Your code here. */
 	return -EINVAL;
