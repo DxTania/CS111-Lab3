@@ -14,8 +14,3 @@ create_blank_direntry
 ospfs_create
 
 read/write
-
-weird issue: 
-in follow_link, current->uid does not work, says no member name
-looked at people's labs on github, they use current->uid
-so confused
