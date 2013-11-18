@@ -551,6 +551,10 @@ ospfs_unlink(struct inode *dirino, struct dentry *dentry)
 
 	od->od_ino = 0;
 	oi->oi_nlink--;
+
+	// Clean up if link count reaches 0
+	if (oi->oi_nlink == 0 && oi->oi_ftype != OSPFS_FTYPE_SYMLINK)
+      return change_size(oi, 0);
 	return 0;
 }
 
@@ -1115,7 +1119,37 @@ create_blank_direntry(ospfs_inode_t *dir_oi)
 static int
 ospfs_link(struct dentry *src_dentry, struct inode *dir, struct dentry *dst_dentry) {
 	/* EXERCISE: Your code here. */
-	return -EINVAL;
+	ospfs_inode_t *dir_oi = ospfs_inode(dir->i_ino);
+	ospfs_inode_t *src_oi = ospfs_inode(src_dentry->d_inode->i_ino);
+	ospfs_direntry_t *new_entry;
+
+	// Error checking
+	if(dir_oi == NULL || dir_oi->oi_ftype != OSPFS_FTYPE_DIR || src_oi->oi_nlink+1 == 0) {
+		return -EIO;
+	}
+	if (dst_dentry->d_name.len > OSPFS_MAXNAMELEN) {
+		return -ENAMETOOLONG;
+	}
+	if (find_direntry(dir_oi, dst_dentry->d_name.name, dst_dentry->d_name.len) != NULL) {
+		return -EEXIST;
+	}
+	// Create new entry
+	new_entry = create_blank_direntry(dir_oi);
+	if (IS_ERR(new_entry)) {
+		return PTR_ERR(new_entry);
+	} else if (new_entry == NULL) {
+		return -EIO;
+	}
+
+	// Set fields of new entry
+	new_entry->od_ino = src_dentry->d_inode->i_ino;
+	memcpy(new_entry->od_name, dst_dentry->d_name.name, dst_dentry->d_name.len);
+	new_entry->od_name[dst_dentry->d_name.len] = '\0';
+
+	// Incr link count
+	src_oi->oi_nlink++;
+
+	return 0;
 }
 
 // ospfs_create
@@ -1191,6 +1225,18 @@ ospfs_create(struct inode *dir, struct dentry *dentry, int mode, struct nameidat
 //
 //   EXERCISE: Complete this function.
 
+static uint32_t find_free_inode(void) {
+	uint32_t inode_no;
+	ospfs_inode_t *new_inode_loc;
+	for (inode_no = 2; inode_no < ospfs_super->os_ninodes; inode_no++) {
+		new_inode_loc = ospfs_inode(inode_no);
+		if (new_inode_loc->oi_nlink == 0) {
+			return inode_no;
+		}
+	}
+	return 0;
+}
+
 static int
 ospfs_symlink(struct inode *dir, struct dentry *dentry, const char *symname)
 {
@@ -1199,7 +1245,65 @@ ospfs_symlink(struct inode *dir, struct dentry *dentry, const char *symname)
 	(void) (dir_oi);
 
 	/* EXERCISE: Your code here. */
-	return -EINVAL;
+	char *qmark, *colon;
+
+	// Error checking
+	if(dir_oi == NULL || dir_oi->oi_ftype != OSPFS_FTYPE_DIR) {
+		return -EIO;
+	}
+	if (dentry->d_name.len > OSPFS_MAXNAMELEN) {
+		return -ENAMETOOLONG;
+	}
+	if (find_direntry(dir_oi, dentry->d_name.name, dentry->d_name.len) != NULL) {
+		return -EEXIST;
+	}
+
+	entry_ino = find_free_inode();
+	if (entry_ino == 0) {
+		return -ENOSPC;
+	}
+	ospfs_symlink_inode_t *new_inode_loc = (ospfs_symlink_inode_t*) ospfs_inode(entry_ino);
+	if (new_inode_loc == NULL) {
+		return -EIO;
+	}
+
+	// Create the direntry & initialize
+	ospfs_direntry_t *od = create_blank_direntry(dir_oi);
+	if (IS_ERR(od))
+		return PTR_ERR(od);
+
+	qmark = strpbrk(symname, "?");
+	colon = strpbrk(symname, ":");
+
+	if (qmark && colon && colon > qmark) {
+		size_t rootpathlen = colon - qmark;
+		size_t otherpathlen = strlen(colon);
+
+		if (rootpathlen + otherpathlen > OSPFS_MAXSYMLINKLEN) {
+			return -ENAMETOOLONG;
+		}
+
+		new_inode_loc->oi_size = strlen(qmark) + 1;
+		strncpy(new_inode_loc->oi_symlink, qmark, rootpathlen);
+		new_inode_loc->oi_symlink[rootpathlen] = '\0';
+		strncpy(new_inode_loc->oi_symlink+rootpathlen+1, colon, otherpathlen);
+		new_inode_loc->oi_symlink[new_inode_loc->oi_size] = '\0';
+	} else {
+		size_t namelen = strlen(symname);
+		if (namelen > OSPFS_MAXSYMLINKLEN) {
+			return -ENAMETOOLONG;
+		}
+		new_inode_loc->oi_size = namelen;
+		strncpy(new_inode_loc->oi_symlink, symname, namelen);
+		new_inode_loc->oi_symlink[namelen] = '\0';
+	}
+
+	new_inode_loc->oi_ftype = OSPFS_FTYPE_SYMLINK;
+	new_inode_loc->oi_nlink = 1;
+
+	strncpy(od->od_name, dentry->d_name.name, dentry->d_name.len);
+	od->od_name[dentry->d_name.len] = '\0';
+	od->od_ino = entry_ino;
 
 	/* Execute this code after your function has successfully created the
 	   file.  Set entry_ino to the created file's inode number before
@@ -1234,8 +1338,24 @@ ospfs_follow_link(struct dentry *dentry, struct nameidata *nd)
 		(ospfs_symlink_inode_t *) ospfs_inode(dentry->d_inode->i_ino);
 	// Exercise: Your code here.
 
-	nd_set_link(nd, oi->oi_symlink);
-	return (void *) 0;
+	char *path;
+	if (oi->oi_symlink[0] != '?') {
+		nd_set_link(nd, oi->oi_symlink+1);
+		return (void*) 0;
+	}
+
+// ospfsmod.c:1343: error: ‘struct task_struct’ has no member named ‘uid’ ??? 
+	if (current->uid == 0) { // root
+		nd_set_link(nd, oi->oi_symlink+1); // ignore ? mark
+		return (void*) 0;
+	}
+
+	path = oi->oi_symlink;
+	while(*path != '\0')
+		path++;
+	nd_set_link(nd, path+2);
+
+	return (void*) 0;
 }
 
 
