@@ -18,7 +18,7 @@ Email: rawrtan@gmail.com
 # Partner 2 (if you're working in a team)
 Name: Carlos Sotelo
 Student ID: 303891983
-Email: 
+Email: charlysotelo@hotmail.com 
 
 # Extra credit problems
 #Extra credit problem: none
